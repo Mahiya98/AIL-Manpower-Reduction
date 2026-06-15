@@ -1,9 +1,8 @@
 // ===== CONFIG =====
 const SHEET_ID = "1fx3FFlAPbF-_nbHEjUtEDrWW8LIwyygfYBZTwSVEVJw";
 const GID = "58409945";
-const SHIFT_BASELINE = 480; // minutes
+const SHIFT_BASELINE = 480;
 
-// Column headers in your Google Sheet (row 1)
 const COLS = {
   section: "Section",
   shift: "Shift",
@@ -16,51 +15,95 @@ const COLS = {
 const SECTIONS = ["All", "Production SMS", "Production Rolling", "Scrap Management", "Distribution", "Inventory", "Quality"];
 const SHIFTS = ["All", "A", "B", "C", "G"];
 
-// 🔧 FIX: keys with spaces MUST be quoted strings
 const SECTION_COLORS = {
-  "Production SMS":      "bg-blue-100 text-blue-700",
-  "Production Rolling":  "bg-cyan-100 text-cyan-700",
-  "Scrap Management":    "bg-orange-100 text-orange-700",
-  "Distribution":        "bg-purple-100 text-purple-700",
-  "Inventory":           "bg-green-100 text-green-700",
-  "Quality":             "bg-pink-100 text-pink-700"
+  "Production SMS":     "bg-blue-100 text-blue-700",
+  "Production Rolling": "bg-cyan-100 text-cyan-700",
+  "Scrap Management":   "bg-orange-100 text-orange-700",
+  "Distribution":       "bg-purple-100 text-purple-700",
+  "Inventory":          "bg-green-100 text-green-700",
+  "Quality":            "bg-pink-100 text-pink-700"
 };
 
 let RAW = [];
 let state = { section: "All", shift: "All", roleSort: "fte", roleSearch: "", empSearch: "" };
 let chartFTE, chartLoad;
 
-// ===== HELPERS =====
 const norm = v => (v === null || v === undefined) ? "" : String(v).trim();
+
+// ===== STATUS BANNER =====
+function setStatus(msg, isError = false) {
+  const el = document.getElementById("lastUpdated");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "text-right text-xs " + (isError ? "text-red-600 font-semibold" : "text-slate-500");
+}
 
 // ===== FETCH =====
 async function fetchData() {
+  setStatus("⏳ Loading data from Google Sheets…");
+
+  // Try gviz JSON first
+  const gvizUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${GID}&t=${Date.now()}`;
   try {
-    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${GID}`;
-    const res = await fetch(url);
+    const res = await fetch(gvizUrl);
     const txt = await res.text();
-    const json = JSON.parse(txt.substring(txt.indexOf("{"), txt.lastIndexOf("}") + 1));
+    console.log("=== GVIZ raw response (first 300 chars) ===");
+    console.log(txt.substring(0, 300));
+
+    // Detect non-JSON response (sign-in page, error HTML, etc.)
+    const startIdx = txt.indexOf("{");
+    const endIdx   = txt.lastIndexOf("}");
+    if (startIdx === -1 || endIdx === -1) {
+      throw new Error("Sheet is NOT publicly shared. Google returned an HTML page instead of data. Fix: Share → Anyone with link → Viewer.");
+    }
+
+    const json = JSON.parse(txt.substring(startIdx, endIdx + 1));
+
+    if (json.status === "error") {
+      const msg = (json.errors && json.errors[0] && json.errors[0].detailed_message) || "Unknown sheet error";
+      throw new Error("Google API error: " + msg);
+    }
+    if (!json.table || !json.table.cols) {
+      throw new Error("Sheet returned no table. Check the GID is correct (current: " + GID + ").");
+    }
+
     const headers = json.table.cols.map(c => norm(c.label) || norm(c.id));
+    console.log("=== Detected headers ===", headers);
 
-    RAW = json.table.rows.map(r => {
-      const obj = {};
-      r.c.forEach((cell, i) => {
-        obj[headers[i]] = cell ? (cell.v ?? "") : "";
-      });
-      return obj;
-    }).filter(r => norm(r[COLS.employee]) || norm(r[COLS.role])); // skip blank rows
+    RAW = json.table.rows
+      .map(r => {
+        const obj = {};
+        r.c.forEach((cell, i) => {
+          obj[headers[i]] = cell ? (cell.v ?? cell.f ?? "") : "";
+        });
+        return obj;
+      })
+      .filter(r => norm(r[COLS.employee]) || norm(r[COLS.role]));
 
-    document.getElementById("lastUpdated").textContent =
-      "Last updated: " + new Date().toLocaleString("en-GB", {
-        day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
-      });
+    console.log("=== Loaded rows ===", RAW.length);
+    console.log("=== Sample row ===", RAW[0]);
+
+    if (RAW.length === 0) {
+      // Header mismatch warning
+      const missing = Object.entries(COLS).filter(([k, v]) => !headers.includes(v)).map(([k, v]) => `"${v}"`);
+      if (missing.length) {
+        throw new Error("Column header mismatch. Missing in your sheet: " + missing.join(", ") +
+          ". Found in sheet: " + headers.join(", "));
+      }
+      throw new Error("Sheet loaded but 0 employee rows found. Check the data and GID.");
+    }
+
+    setStatus("✅ Last updated: " + new Date().toLocaleString("en-GB", {
+      day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
+    }) + " · " + RAW.length + " rows");
 
     buildFilters();
     render();
   } catch (e) {
     console.error("Fetch error:", e);
-    document.getElementById("lastUpdated").textContent =
-      "⚠️ Failed to load. Make sure the sheet is shared as 'Anyone with link → Viewer'.";
+    setStatus("⚠️ " + e.message, true);
+    // Still build filters so UI isn't blank
+    buildFilters();
   }
 }
 
@@ -75,23 +118,27 @@ function applyFilters() {
 
 function buildFilters() {
   const sec = document.getElementById("sectionFilters");
-  sec.innerHTML = SECTIONS.map(s => `
-    <button data-sec="${s}" class="px-4 py-1 rounded-full text-sm border ${state.section===s?'bg-slate-800 text-white':'bg-white'}">${s}</button>
-  `).join("");
-  sec.querySelectorAll("button").forEach(b => b.onclick = () => {
-    state.section = b.dataset.sec; buildFilters(); render();
-  });
+  if (sec) {
+    sec.innerHTML = SECTIONS.map(s => `
+      <button data-sec="${s}" class="px-4 py-1 rounded-full text-sm border ${state.section===s?'bg-slate-800 text-white':'bg-white'}">${s}</button>
+    `).join("");
+    sec.querySelectorAll("button").forEach(b => b.onclick = () => {
+      state.section = b.dataset.sec; buildFilters(); render();
+    });
+  }
 
   const shf = document.getElementById("shiftFilters");
-  shf.innerHTML = SHIFTS.map(s => {
-    const count = s === "All"
-      ? RAW.filter(r => state.section === "All" || norm(r[COLS.section]) === state.section).length
-      : RAW.filter(r => (state.section === "All" || norm(r[COLS.section]) === state.section) && norm(r[COLS.shift]) === s).length;
-    return `<button data-shf="${s}" class="px-4 py-1 rounded-full text-sm border ${state.shift===s?'bg-purple-600 text-white':'bg-white'}">${s} <span class="opacity-70">(${count})</span></button>`;
-  }).join("");
-  shf.querySelectorAll("button").forEach(b => b.onclick = () => {
-    state.shift = b.dataset.shf; buildFilters(); render();
-  });
+  if (shf) {
+    shf.innerHTML = SHIFTS.map(s => {
+      const count = s === "All"
+        ? RAW.filter(r => state.section === "All" || norm(r[COLS.section]) === state.section).length
+        : RAW.filter(r => (state.section === "All" || norm(r[COLS.section]) === state.section) && norm(r[COLS.shift]) === s).length;
+      return `<button data-shf="${s}" class="px-4 py-1 rounded-full text-sm border ${state.shift===s?'bg-purple-600 text-white':'bg-white'}">${s} <span class="opacity-70">(${count})</span></button>`;
+    }).join("");
+    shf.querySelectorAll("button").forEach(b => b.onclick = () => {
+      state.shift = b.dataset.shf; buildFilters(); render();
+    });
+  }
 }
 
 // ===== UI HELPERS =====
@@ -147,7 +194,6 @@ function renderKPIs(data) {
       ${badge}
     </div>`;
   const tag = (txt, cls) => `<span class="inline-block mt-1 px-2 py-0.5 rounded text-[10px] ${cls}">${txt}</span>`;
-
   const fmt = v => v === null ? "—" : v.toFixed(1) + "%";
 
   document.getElementById("kpiCards").innerHTML = [
@@ -300,5 +346,6 @@ document.getElementById("sortLoad").onclick = () => {
 };
 
 // ===== INIT =====
+buildFilters();   // 🔧 show filter buttons immediately, even before data loads
 fetchData();
-setInterval(fetchData, 5 * 60 * 1000); // auto-refresh every 5 min
+setInterval(fetchData, 5 * 60 * 1000);
