@@ -16,11 +16,12 @@ const COLS = {
 const SECTIONS = ["All", "Production SMS", "Production Rolling", "Scrap Management", "Distribution", "Inventory", "Quality"];
 const SHIFTS = ["All", "A", "B", "C", "G"];
 const SECTION_COLORS = {
-  SMS: "bg-blue-100 text-blue-700",
-  Rolling: "bg-cyan-100 text-cyan-700",
-  Scrap: "bg-orange-100 text-orange-700",
+  Production SMS: "bg-blue-100 text-blue-700",
+  Production Rolling: "bg-cyan-100 text-cyan-700",
+  Scrap Management: "bg-orange-100 text-orange-700",
   Distribution: "bg-purple-100 text-purple-700",
-  Inventory: "bg-green-100 text-green-700"
+  Inventory: "bg-green-100 text-green-700",
+  Quality: "bg-green-100 text-green-700"
 };
 
 let RAW = [], state = { section: "All", shift: "All", roleSort: "fte", roleSearch: "", empSearch: "" };
