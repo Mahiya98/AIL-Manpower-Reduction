@@ -3,22 +3,22 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FTE Workload Dashboard</title>
+<title>FTE Workload Dashboard — Akij Ispat Ltd</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body class="bg-slate-50 text-slate-800">
   <!-- Header -->
-  <header class="flex items-center justify-between p-4 border-b bg-white sticky top-0 z-10">
+  <header class="flex flex-wrap items-center justify-between gap-2 p-4 border-b bg-white sticky top-0 z-10">
     <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-lg bg-indigo-900 text-white flex items-center justify-center font-bold">ABC</div>
+      <div class="w-10 h-10 rounded-lg bg-indigo-900 text-white flex items-center justify-center font-bold">AIL</div>
       <div>
         <h1 class="font-bold text-lg">FTE Workload Dashboard</h1>
-        <p class="text-xs text-slate-500">ABCOPEX · ABC Ispat — Live Google Sheets</p>
+        <p class="text-xs text-slate-500">AROPEX · Akij Ispat Ltd — Live Google Sheets</p>
       </div>
     </div>
-    <div class="flex gap-2">
+    <div class="flex flex-wrap gap-2">
       <button class="px-3 py-1 border rounded-lg text-sm">← Back to Hub</button>
       <span class="px-3 py-1 border rounded-lg text-sm flex items-center gap-1">
         <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Live
@@ -43,7 +43,7 @@
     </section>
 
     <!-- KPI Cards -->
-    <section id="kpiCards" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3"></section>
+    <section id="kpiCards" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-9 gap-3"></section>
 
     <!-- Charts -->
     <section class="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -85,7 +85,7 @@
           <h3 class="font-semibold">Capacity alerts</h3>
           <span class="text-xs text-slate-500">roles needing attention</span>
         </div>
-        <div id="alerts" class="space-y-2"></div>
+        <div id="alerts" class="space-y-2 max-h-[500px] overflow-y-auto"></div>
       </div>
     </section>
 
@@ -109,6 +109,10 @@
         </table>
       </div>
     </section>
+
+    <footer class="text-center text-xs text-slate-400 pt-4 pb-2">
+      © Akij Ispat Ltd · AROPEX · FTE Workload Dashboard
+    </footer>
   </main>
 
   <script src="app.js"></script>
