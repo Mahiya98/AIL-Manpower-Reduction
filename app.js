@@ -7,7 +7,7 @@ const SHIFT_BASELINE = 480; // minutes
 const COLS = {
   section: "Section",
   shift: "Shift",
-  employee: "Employee Enroll",
+  employee: "Employee Name",
   enroll: "Employee Enroll",
   role: "Role",
   taskMin: "Actual Time/ Shift"
