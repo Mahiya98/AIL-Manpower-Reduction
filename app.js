@@ -9,7 +9,8 @@ const COLS = {
   employee: "Employee Name",
   enroll: "Employee Enroll",
   role: "Role",
-  taskMin: "Actual Time/ Shift"
+  taskMin: "Actual Time/ Shift",
+  phaseRemarks: "Phase Remarks"   // 🆕 Column M
 };
 
 const SECTIONS = ["All", "Production SMS", "Production Rolling", "Scrap Management", "Distribution", "Inventory", "Quality"];
@@ -25,7 +26,14 @@ const SECTION_COLORS = {
 };
 
 let RAW = [];
-let state = { section: "All", shift: "All", roleSort: "fte", roleSearch: "", empSearch: "" };
+let state = {
+  section: "All",
+  shift: "All",
+  phase: "All",          // 🆕 NEW
+  roleSort: "fte",
+  roleSearch: "",
+  empSearch: ""
+};
 let chartFTE, chartLoad;
 
 const norm = v => (v === null || v === undefined) ? "" : String(v).trim();
@@ -42,7 +50,6 @@ function setStatus(msg, isError = false) {
 async function fetchData() {
   setStatus("⏳ Loading data from Google Sheets…");
 
-  // Try gviz JSON first
   const gvizUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${GID}&t=${Date.now()}`;
   try {
     const res = await fetch(gvizUrl);
@@ -50,7 +57,6 @@ async function fetchData() {
     console.log("=== GVIZ raw response (first 300 chars) ===");
     console.log(txt.substring(0, 300));
 
-    // Detect non-JSON response (sign-in page, error HTML, etc.)
     const startIdx = txt.indexOf("{");
     const endIdx   = txt.lastIndexOf("}");
     if (startIdx === -1 || endIdx === -1) {
@@ -84,13 +90,17 @@ async function fetchData() {
     console.log("=== Sample row ===", RAW[0]);
 
     if (RAW.length === 0) {
-      // Header mismatch warning
       const missing = Object.entries(COLS).filter(([k, v]) => !headers.includes(v)).map(([k, v]) => `"${v}"`);
       if (missing.length) {
         throw new Error("Column header mismatch. Missing in your sheet: " + missing.join(", ") +
           ". Found in sheet: " + headers.join(", "));
       }
       throw new Error("Sheet loaded but 0 employee rows found. Check the data and GID.");
+    }
+
+    // Soft warning if Phase Remarks column missing but other data exists
+    if (!headers.includes(COLS.phaseRemarks)) {
+      console.warn("⚠️ 'Phase Remarks' column not found in sheet. Phase filter will be empty.");
     }
 
     setStatus("✅ Last updated: " + new Date().toLocaleString("en-GB", {
@@ -102,7 +112,6 @@ async function fetchData() {
   } catch (e) {
     console.error("Fetch error:", e);
     setStatus("⚠️ " + e.message, true);
-    // Still build filters so UI isn't blank
     buildFilters();
   }
 }
@@ -112,11 +121,13 @@ function applyFilters() {
   return RAW.filter(r => {
     if (state.section !== "All" && norm(r[COLS.section]) !== state.section) return false;
     if (state.shift   !== "All" && norm(r[COLS.shift])   !== state.shift)   return false;
+    if (state.phase   !== "All" && norm(r[COLS.phaseRemarks]) !== state.phase) return false;  // 🆕
     return true;
   });
 }
 
 function buildFilters() {
+  // ----- SECTION -----
   const sec = document.getElementById("sectionFilters");
   if (sec) {
     sec.innerHTML = SECTIONS.map(s => `
@@ -127,6 +138,7 @@ function buildFilters() {
     });
   }
 
+  // ----- SHIFT -----
   const shf = document.getElementById("shiftFilters");
   if (shf) {
     shf.innerHTML = SHIFTS.map(s => {
@@ -137,6 +149,32 @@ function buildFilters() {
     }).join("");
     shf.querySelectorAll("button").forEach(b => b.onclick = () => {
       state.shift = b.dataset.shf; buildFilters(); render();
+    });
+  }
+
+  // ----- 🆕 PHASE REMARKS -----
+  const ph = document.getElementById("phaseFilters");
+  if (ph) {
+    const uniquePhases = [...new Set(
+      RAW.map(r => norm(r[COLS.phaseRemarks])).filter(Boolean)
+    )].sort();
+    const phases = ["All", ...uniquePhases];
+
+    ph.innerHTML = phases.map(p => {
+      const count = p === "All"
+        ? RAW.filter(r =>
+            (state.section === "All" || norm(r[COLS.section]) === state.section) &&
+            (state.shift   === "All" || norm(r[COLS.shift])   === state.shift)
+          ).length
+        : RAW.filter(r =>
+            (state.section === "All" || norm(r[COLS.section]) === state.section) &&
+            (state.shift   === "All" || norm(r[COLS.shift])   === state.shift) &&
+            norm(r[COLS.phaseRemarks]) === p
+          ).length;
+      return `<button data-phase="${p}" class="px-4 py-1 rounded-full text-sm border ${state.phase===p?'bg-emerald-600 text-white':'bg-white'}">${p} <span class="opacity-70">(${count})</span></button>`;
+    }).join("");
+    ph.querySelectorAll("button").forEach(b => b.onclick = () => {
+      state.phase = b.dataset.phase; buildFilters(); render();
     });
   }
 }
@@ -167,12 +205,21 @@ function renderKPIs(data) {
   const roleMap = {};
   data.forEach(r => {
     const k = norm(r[COLS.section]) + "|" + norm(r[COLS.role]);
-    if (!roleMap[k]) roleMap[k] = { section: norm(r[COLS.section]), role: norm(r[COLS.role]), hc: 0, min: 0 };
+    if (!roleMap[k]) roleMap[k] = {
+      section: norm(r[COLS.section]),
+      role: norm(r[COLS.role]),
+      hc: 0,
+      min: 0,
+      phases: new Set()        // 🆕 collect phases per role
+    };
     roleMap[k].hc++;
     roleMap[k].min += Number(r[COLS.taskMin]) || 0;
+    const ph = norm(r[COLS.phaseRemarks]);
+    if (ph) roleMap[k].phases.add(ph);
   });
   const roles_ = Object.values(roleMap).map(x => ({
     ...x,
+    phases: [...x.phases],     // 🆕 array for display
     fte: x.min / SHIFT_BASELINE,
     load: x.hc ? (x.min / SHIFT_BASELINE) / x.hc * 100 : 0
   }));
@@ -258,17 +305,26 @@ function renderCharts(data) {
 // ===== ROLE TABLE & ALERTS =====
 function renderRoleTable(roles_) {
   const q = state.roleSearch.toLowerCase();
-  let rows = roles_.filter(r => !q || r.role.toLowerCase().includes(q) || r.section.toLowerCase().includes(q));
+  let rows = roles_.filter(r => !q ||
+    r.role.toLowerCase().includes(q) ||
+    r.section.toLowerCase().includes(q) ||
+    r.phases.join(" ").toLowerCase().includes(q));   // 🆕 search by phase
+
   rows.sort((a, b) => state.roleSort === "fte" ? b.fte - a.fte : b.load - a.load);
 
-  document.getElementById("roleTable").innerHTML = rows.map(r => `
-    <tr class="border-t hover:bg-slate-50">
+  document.getElementById("roleTable").innerHTML = rows.map(r => {
+    const phaseTags = r.phases.length
+      ? r.phases.map(p => `<span class="inline-block px-1.5 py-0.5 rounded text-[10px] bg-emerald-50 text-emerald-700 mr-1">${p}</span>`).join("")
+      : `<span class="text-slate-400 text-xs">—</span>`;
+    return `<tr class="border-t hover:bg-slate-50">
       <td class="p-2"><span class="px-2 py-0.5 rounded text-xs ${SECTION_COLORS[r.section] || 'bg-slate-100'}">${r.section}</span></td>
       <td class="p-2">${r.role}</td>
       <td class="p-2 text-center">${r.hc}</td>
       <td class="p-2 text-center font-mono">${r.fte.toFixed(2)}</td>
       <td class="p-2 w-48">${loadBar(r.load)}</td>
-    </tr>`).join("") || `<tr><td colspan="5" class="p-4 text-center text-slate-400">No roles match.</td></tr>`;
+      <td class="p-2">${phaseTags}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="p-4 text-center text-slate-400">No roles match.</td></tr>`;
 
   const over = rows.filter(r => r.load > 100).sort((a, b) => b.load - a.load);
   const und  = rows.filter(r => r.load < 60).sort((a, b) => a.load - b.load);
@@ -277,13 +333,13 @@ function renderRoleTable(roles_) {
     ...over.map(r => `<div class="flex justify-between items-center p-2 bg-red-50 rounded-lg">
         <div class="flex items-center gap-2"><span class="text-red-600">↑</span>
           <div><p class="text-sm font-medium">${r.role}</p>
-          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-red-600">Overloaded</span></p></div>
+          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-red-600">Overloaded</span>${r.phases.length ? ' · <span class="text-emerald-700">'+r.phases.join(", ")+'</span>' : ''}</p></div>
         </div>
         <span class="text-red-600 font-mono text-sm">${Math.round(r.load)}%</span></div>`),
     ...und.map(r => `<div class="flex justify-between items-center p-2 bg-cyan-50 rounded-lg">
         <div class="flex items-center gap-2"><span class="text-cyan-600">↓</span>
           <div><p class="text-sm font-medium">${r.role}</p>
-          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-cyan-600">Underutilised</span></p></div>
+          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-cyan-600">Underutilised</span>${r.phases.length ? ' · <span class="text-emerald-700">'+r.phases.join(", ")+'</span>' : ''}</p></div>
         </div>
         <span class="text-cyan-600 font-mono text-sm">${Math.round(r.load)}%</span></div>`)
   ].join("") || `<p class="text-xs text-slate-400">No alerts</p>`;
@@ -295,7 +351,8 @@ function renderEmployeeTable(data) {
   const rows = data.filter(r => !q ||
     norm(r[COLS.employee]).toLowerCase().includes(q) ||
     norm(r[COLS.role]).toLowerCase().includes(q) ||
-    norm(r[COLS.section]).toLowerCase().includes(q));
+    norm(r[COLS.section]).toLowerCase().includes(q) ||
+    norm(r[COLS.phaseRemarks]).toLowerCase().includes(q));   // 🆕 search by phase
 
   document.getElementById("empCount").textContent = rows.length + " employees";
 
@@ -306,6 +363,7 @@ function renderEmployeeTable(data) {
     const fte = min / SHIFT_BASELINE;
     const load = fte * 100;
     const sec = norm(r[COLS.section]);
+    const phase = norm(r[COLS.phaseRemarks]);
     return `<tr class="border-t hover:bg-slate-50">
       <td class="p-2"><span class="px-2 py-0.5 rounded text-xs ${SECTION_COLORS[sec] || 'bg-slate-100'}">${sec}</span></td>
       <td class="p-2 text-center"><span class="px-2 py-0.5 rounded-full text-xs bg-purple-50">${norm(r[COLS.shift])}</span></td>
@@ -315,8 +373,9 @@ function renderEmployeeTable(data) {
       <td class="p-2 text-center font-mono">${min}</td>
       <td class="p-2 text-center font-mono ${load>100?'text-red-600':load<60?'text-green-600':'text-amber-600'}">${fte.toFixed(2)}</td>
       <td class="p-2 w-40">${loadBar(load)}</td>
+      <td class="p-2">${phase ? `<span class="px-2 py-0.5 rounded text-xs bg-emerald-50 text-emerald-700">${phase}</span>` : '<span class="text-slate-400">—</span>'}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="8" class="p-4 text-center text-slate-400">No employees match.</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="p-4 text-center text-slate-400">No employees match.</td></tr>`;
 }
 
 // ===== RENDER =====
@@ -346,6 +405,6 @@ document.getElementById("sortLoad").onclick = () => {
 };
 
 // ===== INIT =====
-buildFilters();   // 🔧 show filter buttons immediately, even before data loads
+buildFilters();
 fetchData();
 setInterval(fetchData, 5 * 60 * 1000);
