@@ -7,13 +7,13 @@ const SHIFT_BASELINE = 480; // minutes
 const COLS = {
   section: "Section",
   shift: "Shift",
-  employee: "Employee",
-  enroll: "Enroll",
+  employee: "Employee Enroll",
+  enroll: "Employee Enroll",
   role: "Role",
-  taskMin: "Task Min"
+  taskMin: "Actual Time/ Shift"
 };
 
-const SECTIONS = ["All", "SMS", "Rolling", "Scrap", "Distribution", "Inventory"];
+const SECTIONS = ["All", "Production SMS", "Production Rolling", "Scrap Management", "Distribution", "Inventory", "Quality"];
 const SHIFTS = ["All", "A", "B", "C", "G"];
 const SECTION_COLORS = {
   SMS: "bg-blue-100 text-blue-700",
