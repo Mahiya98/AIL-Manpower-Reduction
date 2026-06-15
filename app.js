@@ -7,14 +7,14 @@ const COLS = {
   section: "Section",
   shift: "Shift",
   employee: "Employee Name",
-  enroll: "Employee Enroll",
+  enroll: "Employee Enroll",          // ✅ column F — the source of truth for headcount
   role: "Role",
   taskMin: "Actual Time/ Shift",
-  phaseRemarks: "Phase Remarks"   // 🆕 Column M
+  phaseRemarks: "Phase Remarks"
 };
 
 const SECTIONS = ["All", "Production SMS", "Production Rolling", "Scrap Management", "Distribution", "Inventory", "Quality"];
-const SHIFTS = ["All", "A", "B", "C", "G"];
+const SHIFTS   = ["All", "A", "B", "C", "G"];
 
 const SECTION_COLORS = {
   "Production SMS":     "bg-blue-100 text-blue-700",
@@ -29,7 +29,7 @@ let RAW = [];
 let state = {
   section: "All",
   shift: "All",
-  phase: "All",          // 🆕 NEW
+  phase: "All",
   roleSort: "fte",
   roleSearch: "",
   empSearch: ""
@@ -38,7 +38,33 @@ let chartFTE, chartLoad;
 
 const norm = v => (v === null || v === undefined) ? "" : String(v).trim();
 
-// ===== STATUS BANNER =====
+// =============================================================================
+// 🆕 UNIQUE-EMPLOYEE HELPERS — every headcount in the app uses these
+// =============================================================================
+const enrollOf = r => norm(r[COLS.enroll]).replace(/[,\s]/g, "");   // "515,194" → "515194"
+
+/** Count unique Employee Enroll values across a row set */
+function uniqEmpCount(rows) {
+  const s = new Set();
+  for (const r of rows) {
+    const id = enrollOf(r);
+    if (id) s.add(id);
+  }
+  return s.size;
+}
+
+/** Count unique Employee Enroll values matching a predicate */
+function uniqEmpWhere(rows, predicate) {
+  const s = new Set();
+  for (const r of rows) {
+    if (!predicate(r)) continue;
+    const id = enrollOf(r);
+    if (id) s.add(id);
+  }
+  return s.size;
+}
+
+// ===== STATUS =====
 function setStatus(msg, isError = false) {
   const el = document.getElementById("lastUpdated");
   if (!el) return;
@@ -49,68 +75,41 @@ function setStatus(msg, isError = false) {
 // ===== FETCH =====
 async function fetchData() {
   setStatus("⏳ Loading data from Google Sheets…");
-
   const gvizUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&gid=${GID}&t=${Date.now()}`;
   try {
     const res = await fetch(gvizUrl);
     const txt = await res.text();
-    console.log("=== GVIZ raw response (first 300 chars) ===");
-    console.log(txt.substring(0, 300));
-
     const startIdx = txt.indexOf("{");
     const endIdx   = txt.lastIndexOf("}");
-    if (startIdx === -1 || endIdx === -1) {
-      throw new Error("Sheet is NOT publicly shared. Google returned an HTML page instead of data. Fix: Share → Anyone with link → Viewer.");
-    }
+    if (startIdx === -1 || endIdx === -1) throw new Error("Sheet is NOT publicly shared. Share → Anyone with link → Viewer.");
 
     const json = JSON.parse(txt.substring(startIdx, endIdx + 1));
-
-    if (json.status === "error") {
-      const msg = (json.errors && json.errors[0] && json.errors[0].detailed_message) || "Unknown sheet error";
-      throw new Error("Google API error: " + msg);
-    }
-    if (!json.table || !json.table.cols) {
-      throw new Error("Sheet returned no table. Check the GID is correct (current: " + GID + ").");
-    }
+    if (json.status === "error") throw new Error("Google API: " + (json.errors?.[0]?.detailed_message || "unknown"));
+    if (!json.table?.cols) throw new Error("Sheet returned no table. Check GID: " + GID);
 
     const headers = json.table.cols.map(c => norm(c.label) || norm(c.id));
-    console.log("=== Detected headers ===", headers);
-
     RAW = json.table.rows
       .map(r => {
         const obj = {};
-        r.c.forEach((cell, i) => {
-          obj[headers[i]] = cell ? (cell.v ?? cell.f ?? "") : "";
-        });
+        r.c.forEach((cell, i) => { obj[headers[i]] = cell ? (cell.v ?? cell.f ?? "") : ""; });
         return obj;
       })
       .filter(r => norm(r[COLS.employee]) || norm(r[COLS.role]));
 
-    console.log("=== Loaded rows ===", RAW.length);
-    console.log("=== Sample row ===", RAW[0]);
-
     if (RAW.length === 0) {
-      const missing = Object.entries(COLS).filter(([k, v]) => !headers.includes(v)).map(([k, v]) => `"${v}"`);
-      if (missing.length) {
-        throw new Error("Column header mismatch. Missing in your sheet: " + missing.join(", ") +
-          ". Found in sheet: " + headers.join(", "));
-      }
-      throw new Error("Sheet loaded but 0 employee rows found. Check the data and GID.");
+      const missing = Object.values(COLS).filter(v => !headers.includes(v));
+      throw new Error(missing.length
+        ? "Missing columns: " + missing.join(", ") + " · Found: " + headers.join(", ")
+        : "Sheet loaded but 0 rows found.");
     }
 
-    // Soft warning if Phase Remarks column missing but other data exists
-    if (!headers.includes(COLS.phaseRemarks)) {
-      console.warn("⚠️ 'Phase Remarks' column not found in sheet. Phase filter will be empty.");
-    }
-
-    setStatus("✅ Last updated: " + new Date().toLocaleString("en-GB", {
-      day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"
-    }) + " · " + RAW.length + " rows");
+    const totalEmp = uniqEmpCount(RAW);
+    setStatus(`✅ Last updated ${new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})} · ${RAW.length} task rows · ${totalEmp} unique employees`);
 
     buildFilters();
     render();
   } catch (e) {
-    console.error("Fetch error:", e);
+    console.error(e);
     setStatus("⚠️ " + e.message, true);
     buildFilters();
   }
@@ -119,32 +118,39 @@ async function fetchData() {
 // ===== FILTERS =====
 function applyFilters() {
   return RAW.filter(r => {
-    if (state.section !== "All" && norm(r[COLS.section]) !== state.section) return false;
-    if (state.shift   !== "All" && norm(r[COLS.shift])   !== state.shift)   return false;
-    if (state.phase   !== "All" && norm(r[COLS.phaseRemarks]) !== state.phase) return false;  // 🆕
+    if (state.section !== "All" && norm(r[COLS.section])      !== state.section) return false;
+    if (state.shift   !== "All" && norm(r[COLS.shift])        !== state.shift)   return false;
+    if (state.phase   !== "All" && norm(r[COLS.phaseRemarks]) !== state.phase)   return false;
     return true;
   });
 }
 
 function buildFilters() {
-  // ----- SECTION -----
+  // ----- SECTION ----- (count = unique employees per section, respecting other filters)
   const sec = document.getElementById("sectionFilters");
   if (sec) {
-    sec.innerHTML = SECTIONS.map(s => `
-      <button data-sec="${s}" class="px-4 py-1 rounded-full text-sm border ${state.section===s?'bg-slate-800 text-white':'bg-white'}">${s}</button>
-    `).join("");
+    sec.innerHTML = SECTIONS.map(s => {
+      const count = uniqEmpWhere(RAW, r =>
+        (s === "All" || norm(r[COLS.section]) === s) &&
+        (state.shift === "All" || norm(r[COLS.shift])        === state.shift) &&
+        (state.phase === "All" || norm(r[COLS.phaseRemarks]) === state.phase)
+      );
+      return `<button data-sec="${s}" class="px-4 py-1 rounded-full text-sm border ${state.section===s?'bg-slate-800 text-white':'bg-white'}">${s} <span class="opacity-70">(${count})</span></button>`;
+    }).join("");
     sec.querySelectorAll("button").forEach(b => b.onclick = () => {
       state.section = b.dataset.sec; buildFilters(); render();
     });
   }
 
-  // ----- SHIFT -----
+  // ----- SHIFT ----- (count = unique employees per shift, respecting other filters)
   const shf = document.getElementById("shiftFilters");
   if (shf) {
     shf.innerHTML = SHIFTS.map(s => {
-      const count = s === "All"
-        ? RAW.filter(r => state.section === "All" || norm(r[COLS.section]) === state.section).length
-        : RAW.filter(r => (state.section === "All" || norm(r[COLS.section]) === state.section) && norm(r[COLS.shift]) === s).length;
+      const count = uniqEmpWhere(RAW, r =>
+        (state.section === "All" || norm(r[COLS.section]) === state.section) &&
+        (s === "All" || norm(r[COLS.shift]) === s) &&
+        (state.phase === "All" || norm(r[COLS.phaseRemarks]) === state.phase)
+      );
       return `<button data-shf="${s}" class="px-4 py-1 rounded-full text-sm border ${state.shift===s?'bg-purple-600 text-white':'bg-white'}">${s} <span class="opacity-70">(${count})</span></button>`;
     }).join("");
     shf.querySelectorAll("button").forEach(b => b.onclick = () => {
@@ -152,25 +158,17 @@ function buildFilters() {
     });
   }
 
-  // ----- 🆕 PHASE REMARKS -----
+  // ----- PHASE REMARKS ----- (count = unique employees per phase, respecting other filters)
   const ph = document.getElementById("phaseFilters");
   if (ph) {
-    const uniquePhases = [...new Set(
-      RAW.map(r => norm(r[COLS.phaseRemarks])).filter(Boolean)
-    )].sort();
+    const uniquePhases = [...new Set(RAW.map(r => norm(r[COLS.phaseRemarks])).filter(Boolean))].sort();
     const phases = ["All", ...uniquePhases];
-
     ph.innerHTML = phases.map(p => {
-      const count = p === "All"
-        ? RAW.filter(r =>
-            (state.section === "All" || norm(r[COLS.section]) === state.section) &&
-            (state.shift   === "All" || norm(r[COLS.shift])   === state.shift)
-          ).length
-        : RAW.filter(r =>
-            (state.section === "All" || norm(r[COLS.section]) === state.section) &&
-            (state.shift   === "All" || norm(r[COLS.shift])   === state.shift) &&
-            norm(r[COLS.phaseRemarks]) === p
-          ).length;
+      const count = uniqEmpWhere(RAW, r =>
+        (state.section === "All" || norm(r[COLS.section]) === state.section) &&
+        (state.shift   === "All" || norm(r[COLS.shift])   === state.shift) &&
+        (p === "All" || norm(r[COLS.phaseRemarks]) === p)
+      );
       return `<button data-phase="${p}" class="px-4 py-1 rounded-full text-sm border ${state.phase===p?'bg-emerald-600 text-white':'bg-white'}">${p} <span class="opacity-70">(${count})</span></button>`;
     }).join("");
     ph.querySelectorAll("button").forEach(b => b.onclick = () => {
@@ -180,11 +178,7 @@ function buildFilters() {
 }
 
 // ===== UI HELPERS =====
-function workloadColor(pct) {
-  if (pct > 100) return "bg-red-500";
-  if (pct >= 60) return "bg-amber-500";
-  return "bg-green-500";
-}
+function workloadColor(pct) { return pct > 100 ? "bg-red-500" : pct >= 60 ? "bg-amber-500" : "bg-green-500"; }
 function loadBar(pct) {
   const cap = Math.min(pct, 220);
   return `<div class="flex items-center gap-2">
@@ -197,34 +191,45 @@ function loadBar(pct) {
 
 // ===== KPI CARDS =====
 function renderKPIs(data) {
-  const total = data.length;
-  const roles = new Set(data.map(r => norm(r[COLS.role]))).size;
+  // ✅ Total Employees = unique Employee Enroll within current filters
+  const total = uniqEmpCount(data);
+  const roles = new Set(data.map(r => norm(r[COLS.role])).filter(Boolean)).size;
   const totalMin = data.reduce((s, r) => s + (Number(r[COLS.taskMin]) || 0), 0);
   const requiredFTE = totalMin / SHIFT_BASELINE;
 
+  // Build per-role aggregates — headcount = unique enrolls within that role/section
   const roleMap = {};
   data.forEach(r => {
     const k = norm(r[COLS.section]) + "|" + norm(r[COLS.role]);
     if (!roleMap[k]) roleMap[k] = {
       section: norm(r[COLS.section]),
       role: norm(r[COLS.role]),
-      hc: 0,
+      enrolls: new Set(),     // ✅ unique people in this role
       min: 0,
-      phases: new Set()        // 🆕 collect phases per role
+      phases: new Set()
     };
-    roleMap[k].hc++;
+    const id = enrollOf(r);
+    if (id) roleMap[k].enrolls.add(id);
     roleMap[k].min += Number(r[COLS.taskMin]) || 0;
     const ph = norm(r[COLS.phaseRemarks]);
     if (ph) roleMap[k].phases.add(ph);
   });
-  const roles_ = Object.values(roleMap).map(x => ({
-    ...x,
-    phases: [...x.phases],     // 🆕 array for display
-    fte: x.min / SHIFT_BASELINE,
-    load: x.hc ? (x.min / SHIFT_BASELINE) / x.hc * 100 : 0
-  }));
+  const roles_ = Object.values(roleMap).map(x => {
+    const hc = x.enrolls.size;                                    // ✅ unique enroll count
+    const fte = x.min / SHIFT_BASELINE;
+    return {
+      section: x.section,
+      role: x.role,
+      hc,
+      min: x.min,
+      fte,
+      load: hc ? (fte / hc) * 100 : 0,
+      phases: [...x.phases]
+    };
+  });
+
   const overloaded = roles_.filter(r => r.load > 100).length;
-  const under = roles_.filter(r => r.load < 60).length;
+  const under      = roles_.filter(r => r.load < 60).length;
 
   const sectionAvg = sec => {
     const rs = roles_.filter(r => r.section === sec);
@@ -244,7 +249,7 @@ function renderKPIs(data) {
   const fmt = v => v === null ? "—" : v.toFixed(1) + "%";
 
   document.getElementById("kpiCards").innerHTML = [
-    card("Total Employees", total, "Across 6 sections"),
+    card("Total Employees", total, "Unique Employee Enroll (col F)"),
     card("Unique Roles", roles, "Distinct role names", "text-slate-800", tag("All shifts", "bg-blue-50 text-blue-700")),
     card("Required FTE", requiredFTE.toFixed(1), "480 min standard shift", "text-slate-800", tag(`${avgAll.toFixed(1)}% avg load`, "bg-amber-50 text-amber-700")),
     card("Overloaded Roles", overloaded, "Workload > 100%", "text-red-600", tag("Action needed", "bg-red-50 text-red-700")),
@@ -260,37 +265,41 @@ function renderKPIs(data) {
 
 // ===== CHARTS =====
 function renderCharts(data) {
+  // Aggregate per section: headcount = unique enrolls; FTE = total minutes / 480
   const map = {};
   data.forEach(r => {
     const s = norm(r[COLS.section]); if (!s) return;
-    if (!map[s]) map[s] = { hc: 0, min: 0 };
-    map[s].hc++;
+    if (!map[s]) map[s] = { enrolls: new Set(), min: 0 };
+    const id = enrollOf(r);
+    if (id) map[s].enrolls.add(id);
     map[s].min += Number(r[COLS.taskMin]) || 0;
   });
   const labels = Object.keys(map);
   const fte = labels.map(l => +(map[l].min / SHIFT_BASELINE).toFixed(1));
-  const hc  = labels.map(l => map[l].hc);
+  const hc  = labels.map(l => map[l].enrolls.size);                    // ✅ unique people
 
   if (chartFTE) chartFTE.destroy();
   chartFTE = new Chart(document.getElementById("chartFTE"), {
     type: "bar",
     data: { labels, datasets: [
       { label: "Required FTE", data: fte, backgroundColor: "#1e3a8a" },
-      { label: "Headcount",    data: hc,  backgroundColor: "#bfdbfe" }
+      { label: "Headcount (unique)", data: hc, backgroundColor: "#bfdbfe" }
     ]},
     options: { responsive: true, plugins: { legend: { position: "top" } } }
   });
 
+  // Avg workload per section: per role, hc = unique enrolls in that role
   const loads = labels.map(l => {
     const rows = data.filter(r => norm(r[COLS.section]) === l);
     const roleMap = {};
     rows.forEach(r => {
       const k = norm(r[COLS.role]);
-      if (!roleMap[k]) roleMap[k] = { hc: 0, min: 0 };
-      roleMap[k].hc++;
+      if (!roleMap[k]) roleMap[k] = { enrolls: new Set(), min: 0 };
+      const id = enrollOf(r);
+      if (id) roleMap[k].enrolls.add(id);
       roleMap[k].min += Number(r[COLS.taskMin]) || 0;
     });
-    const arr = Object.values(roleMap).map(x => x.hc ? (x.min / SHIFT_BASELINE) / x.hc * 100 : 0);
+    const arr = Object.values(roleMap).map(x => x.enrolls.size ? (x.min / SHIFT_BASELINE) / x.enrolls.size * 100 : 0);
     return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
   });
 
@@ -308,7 +317,7 @@ function renderRoleTable(roles_) {
   let rows = roles_.filter(r => !q ||
     r.role.toLowerCase().includes(q) ||
     r.section.toLowerCase().includes(q) ||
-    r.phases.join(" ").toLowerCase().includes(q));   // 🆕 search by phase
+    r.phases.join(" ").toLowerCase().includes(q));
 
   rows.sort((a, b) => state.roleSort === "fte" ? b.fte - a.fte : b.load - a.load);
 
@@ -333,47 +342,70 @@ function renderRoleTable(roles_) {
     ...over.map(r => `<div class="flex justify-between items-center p-2 bg-red-50 rounded-lg">
         <div class="flex items-center gap-2"><span class="text-red-600">↑</span>
           <div><p class="text-sm font-medium">${r.role}</p>
-          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-red-600">Overloaded</span>${r.phases.length ? ' · <span class="text-emerald-700">'+r.phases.join(", ")+'</span>' : ''}</p></div>
+          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-red-600">Overloaded</span>${r.phases.length?' · <span class="text-emerald-700">'+r.phases.join(", ")+'</span>':''}</p></div>
         </div>
         <span class="text-red-600 font-mono text-sm">${Math.round(r.load)}%</span></div>`),
     ...und.map(r => `<div class="flex justify-between items-center p-2 bg-cyan-50 rounded-lg">
         <div class="flex items-center gap-2"><span class="text-cyan-600">↓</span>
           <div><p class="text-sm font-medium">${r.role}</p>
-          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-cyan-600">Underutilised</span>${r.phases.length ? ' · <span class="text-emerald-700">'+r.phases.join(", ")+'</span>' : ''}</p></div>
+          <p class="text-xs"><span class="px-1.5 py-0.5 rounded ${SECTION_COLORS[r.section]||''}">${r.section}</span> <span class="text-cyan-600">Underutilised</span>${r.phases.length?' · <span class="text-emerald-700">'+r.phases.join(", ")+'</span>':''}</p></div>
         </div>
         <span class="text-cyan-600 font-mono text-sm">${Math.round(r.load)}%</span></div>`)
   ].join("") || `<p class="text-xs text-slate-400">No alerts</p>`;
 }
 
 // ===== EMPLOYEE TABLE =====
+// ✅ Show ONE row per unique Employee Enroll (aggregating their task minutes)
 function renderEmployeeTable(data) {
   const q = state.empSearch.toLowerCase();
-  const rows = data.filter(r => !q ||
-    norm(r[COLS.employee]).toLowerCase().includes(q) ||
-    norm(r[COLS.role]).toLowerCase().includes(q) ||
-    norm(r[COLS.section]).toLowerCase().includes(q) ||
-    norm(r[COLS.phaseRemarks]).toLowerCase().includes(q));   // 🆕 search by phase
 
-  document.getElementById("empCount").textContent = rows.length + " employees";
+  // Group rows by Employee Enroll → one card/row per person
+  const byEnroll = {};
+  for (const r of data) {
+    const id = enrollOf(r);
+    if (!id) continue;
+    if (!byEnroll[id]) {
+      byEnroll[id] = {
+        enroll: id,
+        name:    norm(r[COLS.employee]),
+        section: norm(r[COLS.section]),
+        shift:   norm(r[COLS.shift]),
+        role:    norm(r[COLS.role]),
+        phase:   norm(r[COLS.phaseRemarks]),
+        min:     0
+      };
+    }
+    byEnroll[id].min += Number(r[COLS.taskMin]) || 0;
+  }
+  let people = Object.values(byEnroll);
 
-  rows.sort((a, b) => (Number(b[COLS.taskMin]) || 0) - (Number(a[COLS.taskMin]) || 0));
+  // Search across all relevant fields
+  if (q) {
+    people = people.filter(p =>
+      p.name.toLowerCase().includes(q)    ||
+      p.role.toLowerCase().includes(q)    ||
+      p.section.toLowerCase().includes(q) ||
+      p.phase.toLowerCase().includes(q)   ||
+      p.enroll.toLowerCase().includes(q)
+    );
+  }
 
-  document.getElementById("empTable").innerHTML = rows.map(r => {
-    const min = Number(r[COLS.taskMin]) || 0;
-    const fte = min / SHIFT_BASELINE;
+  document.getElementById("empCount").textContent = people.length + " employees";
+  people.sort((a, b) => b.min - a.min);
+
+  document.getElementById("empTable").innerHTML = people.map(p => {
+    const fte  = p.min / SHIFT_BASELINE;
     const load = fte * 100;
-    const sec = norm(r[COLS.section]);
-    const phase = norm(r[COLS.phaseRemarks]);
     return `<tr class="border-t hover:bg-slate-50">
-      <td class="p-2"><span class="px-2 py-0.5 rounded text-xs ${SECTION_COLORS[sec] || 'bg-slate-100'}">${sec}</span></td>
-      <td class="p-2 text-center"><span class="px-2 py-0.5 rounded-full text-xs bg-purple-50">${norm(r[COLS.shift])}</span></td>
-      <td class="p-2 font-medium">${norm(r[COLS.employee])}</td>
-      <td class="p-2 text-center text-slate-500">${norm(r[COLS.enroll])}</td>
-      <td class="p-2">${norm(r[COLS.role])}</td>
-      <td class="p-2 text-center font-mono">${min}</td>
+      <td class="p-2"><span class="px-2 py-0.5 rounded text-xs ${SECTION_COLORS[p.section] || 'bg-slate-100'}">${p.section}</span></td>
+      <td class="p-2 text-center"><span class="px-2 py-0.5 rounded-full text-xs bg-purple-50">${p.shift}</span></td>
+      <td class="p-2 font-medium">${p.name}</td>
+      <td class="p-2 text-center text-slate-500">${p.enroll}</td>
+      <td class="p-2">${p.role}</td>
+      <td class="p-2 text-center font-mono">${p.min}</td>
       <td class="p-2 text-center font-mono ${load>100?'text-red-600':load<60?'text-green-600':'text-amber-600'}">${fte.toFixed(2)}</td>
       <td class="p-2 w-40">${loadBar(load)}</td>
-      <td class="p-2">${phase ? `<span class="px-2 py-0.5 rounded text-xs bg-emerald-50 text-emerald-700">${phase}</span>` : '<span class="text-slate-400">—</span>'}</td>
+      <td class="p-2">${p.phase ? `<span class="px-2 py-0.5 rounded text-xs bg-emerald-50 text-emerald-700">${p.phase}</span>` : '<span class="text-slate-400">—</span>'}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="9" class="p-4 text-center text-slate-400">No employees match.</td></tr>`;
 }
