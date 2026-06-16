@@ -7,23 +7,48 @@ const COLS = {
   section: "Section",
   shift: "Shift",
   employee: "Employee Name",
-  enroll: "Employee Enroll",          // ✅ column F — the source of truth for headcount
+  enroll: "Employee Enroll",
   role: "Role",
   taskMin: "Actual Time/ Shift",
   phaseRemarks: "Phase Remarks"
 };
 
-const SECTIONS = ["All", "Production SMS", "Production Rolling", "Scrap Management", "Distribution", "Inventory", "Quality"];
-const SHIFTS   = ["All", "A", "B", "C", "G"];
+// ✅ DYNAMIC — auto-populated from Google Sheet
+let SECTIONS = ["All"];
+const SHIFTS = ["All", "A", "B", "C", "G"];
 
+// ✅ Base colors (new sections get auto-assigned colors)
 const SECTION_COLORS = {
   "Production SMS":     "bg-blue-100 text-blue-700",
   "Production Rolling": "bg-cyan-100 text-cyan-700",
   "Scrap Management":   "bg-orange-100 text-orange-700",
   "Distribution":       "bg-purple-100 text-purple-700",
   "Inventory":          "bg-green-100 text-green-700",
-  "Quality":            "bg-pink-100 text-pink-700"
+  "Quality":            "bg-pink-100 text-pink-700",
+  "HR-Admin":           "bg-yellow-100 text-yellow-700",
+  "Sustainability":     "bg-teal-100 text-teal-700",
+  "Civil":              "bg-stone-100 text-stone-700"
 };
+
+// ✅ Auto-assign colors to any future new section
+const COLOR_POOL = [
+  "bg-rose-100 text-rose-700",
+  "bg-indigo-100 text-indigo-700",
+  "bg-lime-100 text-lime-700",
+  "bg-fuchsia-100 text-fuchsia-700",
+  "bg-amber-100 text-amber-700",
+  "bg-sky-100 text-sky-700",
+  "bg-violet-100 text-violet-700",
+  "bg-emerald-100 text-emerald-700"
+];
+let _colorIdx = 0;
+function ensureSectionColor(name) {
+  if (!name) return;
+  if (!SECTION_COLORS[name]) {
+    SECTION_COLORS[name] = COLOR_POOL[_colorIdx % COLOR_POOL.length];
+    _colorIdx++;
+  }
+}
 
 let RAW = [];
 let state = {
@@ -39,11 +64,10 @@ let chartFTE, chartLoad;
 const norm = v => (v === null || v === undefined) ? "" : String(v).trim();
 
 // =============================================================================
-// 🆕 UNIQUE-EMPLOYEE HELPERS — every headcount in the app uses these
+// UNIQUE-EMPLOYEE HELPERS
 // =============================================================================
-const enrollOf = r => norm(r[COLS.enroll]).replace(/[,\s]/g, "");   // "515,194" → "515194"
+const enrollOf = r => norm(r[COLS.enroll]).replace(/[,\s]/g, "");
 
-/** Count unique Employee Enroll values across a row set */
 function uniqEmpCount(rows) {
   const s = new Set();
   for (const r of rows) {
@@ -53,7 +77,6 @@ function uniqEmpCount(rows) {
   return s.size;
 }
 
-/** Count unique Employee Enroll values matching a predicate */
 function uniqEmpWhere(rows, predicate) {
   const s = new Set();
   for (const r of rows) {
@@ -103,8 +126,20 @@ async function fetchData() {
         : "Sheet loaded but 0 rows found.");
     }
 
+    // ===== ✅ AUTO-GENERATE SECTIONS FROM SHEET =====
+    const dynamicSections = [...new Set(
+      RAW.map(r => norm(r[COLS.section])).filter(Boolean)
+    )].sort();
+    SECTIONS = ["All", ...dynamicSections];
+    dynamicSections.forEach(s => ensureSectionColor(s));
+
+    // If currently selected section disappeared from sheet, reset to All
+    if (state.section !== "All" && !SECTIONS.includes(state.section)) {
+      state.section = "All";
+    }
+
     const totalEmp = uniqEmpCount(RAW);
-    setStatus(`✅ Last updated ${new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})} · ${RAW.length} task rows · ${totalEmp} unique employees`);
+    setStatus(`✅ Last updated ${new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})} · ${RAW.length} task rows · ${totalEmp} unique employees · ${dynamicSections.length} sections`);
 
     buildFilters();
     render();
@@ -126,7 +161,7 @@ function applyFilters() {
 }
 
 function buildFilters() {
-  // ----- SECTION ----- (count = unique employees per section, respecting other filters)
+  // ----- SECTION -----
   const sec = document.getElementById("sectionFilters");
   if (sec) {
     sec.innerHTML = SECTIONS.map(s => {
@@ -142,7 +177,7 @@ function buildFilters() {
     });
   }
 
-  // ----- SHIFT ----- (count = unique employees per shift, respecting other filters)
+  // ----- SHIFT -----
   const shf = document.getElementById("shiftFilters");
   if (shf) {
     shf.innerHTML = SHIFTS.map(s => {
@@ -158,7 +193,7 @@ function buildFilters() {
     });
   }
 
-  // ----- PHASE REMARKS ----- (count = unique employees per phase, respecting other filters)
+  // ----- PHASE REMARKS -----
   const ph = document.getElementById("phaseFilters");
   if (ph) {
     const uniquePhases = [...new Set(RAW.map(r => norm(r[COLS.phaseRemarks])).filter(Boolean))].sort();
@@ -191,20 +226,18 @@ function loadBar(pct) {
 
 // ===== KPI CARDS =====
 function renderKPIs(data) {
-  // ✅ Total Employees = unique Employee Enroll within current filters
   const total = uniqEmpCount(data);
   const roles = new Set(data.map(r => norm(r[COLS.role])).filter(Boolean)).size;
   const totalMin = data.reduce((s, r) => s + (Number(r[COLS.taskMin]) || 0), 0);
   const requiredFTE = totalMin / SHIFT_BASELINE;
 
-  // Build per-role aggregates — headcount = unique enrolls within that role/section
   const roleMap = {};
   data.forEach(r => {
     const k = norm(r[COLS.section]) + "|" + norm(r[COLS.role]);
     if (!roleMap[k]) roleMap[k] = {
       section: norm(r[COLS.section]),
       role: norm(r[COLS.role]),
-      enrolls: new Set(),     // ✅ unique people in this role
+      enrolls: new Set(),
       min: 0,
       phases: new Set()
     };
@@ -215,7 +248,7 @@ function renderKPIs(data) {
     if (ph) roleMap[k].phases.add(ph);
   });
   const roles_ = Object.values(roleMap).map(x => {
-    const hc = x.enrolls.size;                                    // ✅ unique enroll count
+    const hc = x.enrolls.size;
     const fte = x.min / SHIFT_BASELINE;
     return {
       section: x.section,
@@ -248,24 +281,36 @@ function renderKPIs(data) {
   const tag = (txt, cls) => `<span class="inline-block mt-1 px-2 py-0.5 rounded text-[10px] ${cls}">${txt}</span>`;
   const fmt = v => v === null ? "—" : v.toFixed(1) + "%";
 
-  document.getElementById("kpiCards").innerHTML = [
+  // ✅ Build base KPI cards
+  const baseCards = [
     card("Total Employees", total, "Unique Employee Enroll (col F)"),
     card("Unique Roles", roles, "Distinct role names", "text-slate-800", tag("All shifts", "bg-blue-50 text-blue-700")),
     card("Required FTE", requiredFTE.toFixed(1), "480 min standard shift", "text-slate-800", tag(`${avgAll.toFixed(1)}% avg load`, "bg-amber-50 text-amber-700")),
     card("Overloaded Roles", overloaded, "Workload > 100%", "text-red-600", tag("Action needed", "bg-red-50 text-red-700")),
-    card("Underutilised Roles", under, "Workload < 60%", "text-blue-600", tag("Review capacity", "bg-blue-50 text-blue-700")),
-    card("SMS Avg Load", fmt(sectionAvg("Production SMS")), "Production SMS", "text-slate-800", tag("Optimal", "bg-amber-50 text-amber-700")),
-    card("Rolling Avg Load", fmt(sectionAvg("Production Rolling")), "Production Rolling", "text-slate-800", tag("Optimal", "bg-amber-50 text-amber-700")),
-    card("Inventory Avg Load", fmt(sectionAvg("Inventory")), "Inventory section", "text-green-600", tag("Optimal", "bg-amber-50 text-amber-700")),
-    card("Quality Avg Load", fmt(sectionAvg("Quality")), "Quality section", "text-pink-600", tag("Optimal", "bg-pink-50 text-pink-700"))
-  ].join("");
+    card("Underutilised Roles", under, "Workload < 60%", "text-blue-600", tag("Review capacity", "bg-blue-50 text-blue-700"))
+  ];
+
+  // ✅ DYNAMIC — auto-generate Avg Load card for EACH section in sheet
+  const dynamicSections = SECTIONS.filter(s => s !== "All");
+  const sectionCards = dynamicSections.map(sec => {
+    const avg = sectionAvg(sec);
+    const colorClass = SECTION_COLORS[sec] || "bg-slate-50 text-slate-700";
+    return card(
+      `${sec} Avg Load`,
+      fmt(avg),
+      `${sec} section`,
+      "text-slate-800",
+      tag("Live", colorClass)
+    );
+  });
+
+  document.getElementById("kpiCards").innerHTML = [...baseCards, ...sectionCards].join("");
 
   return { roles_ };
 }
 
 // ===== CHARTS =====
 function renderCharts(data) {
-  // Aggregate per section: headcount = unique enrolls; FTE = total minutes / 480
   const map = {};
   data.forEach(r => {
     const s = norm(r[COLS.section]); if (!s) return;
@@ -274,9 +319,9 @@ function renderCharts(data) {
     if (id) map[s].enrolls.add(id);
     map[s].min += Number(r[COLS.taskMin]) || 0;
   });
-  const labels = Object.keys(map);
+  const labels = Object.keys(map).sort();
   const fte = labels.map(l => +(map[l].min / SHIFT_BASELINE).toFixed(1));
-  const hc  = labels.map(l => map[l].enrolls.size);                    // ✅ unique people
+  const hc  = labels.map(l => map[l].enrolls.size);
 
   if (chartFTE) chartFTE.destroy();
   chartFTE = new Chart(document.getElementById("chartFTE"), {
@@ -288,7 +333,6 @@ function renderCharts(data) {
     options: { responsive: true, plugins: { legend: { position: "top" } } }
   });
 
-  // Avg workload per section: per role, hc = unique enrolls in that role
   const loads = labels.map(l => {
     const rows = data.filter(r => norm(r[COLS.section]) === l);
     const roleMap = {};
@@ -355,11 +399,9 @@ function renderRoleTable(roles_) {
 }
 
 // ===== EMPLOYEE TABLE =====
-// ✅ Show ONE row per unique Employee Enroll (aggregating their task minutes)
 function renderEmployeeTable(data) {
   const q = state.empSearch.toLowerCase();
 
-  // Group rows by Employee Enroll → one card/row per person
   const byEnroll = {};
   for (const r of data) {
     const id = enrollOf(r);
@@ -379,7 +421,6 @@ function renderEmployeeTable(data) {
   }
   let people = Object.values(byEnroll);
 
-  // Search across all relevant fields
   if (q) {
     people = people.filter(p =>
       p.name.toLowerCase().includes(q)    ||
